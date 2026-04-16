@@ -12,6 +12,103 @@ from feast.types import Int64, Float64, String
 from feast.on_demand_feature_view import on_demand_feature_view
 import pandas as pd
 
+import numpy as np
+import uuid
+import time
+from datetime import datetime
+from sklearn.preprocessing import LabelEncoder,OrdinalEncoder, OneHotEncoder
+from sklearn.preprocessing import StandardScaler, MinMaxScaler, RobustScaler
+from sklearn.impute import KNNImputer, SimpleImputer
+from sklearn.pipeline import Pipeline
+from sklearn.feature_selection import VarianceThreshold
+from sklearn.decomposition import PCA
+from sklearn.model_selection import train_test_split
+from loguru import logger
+
+class FeatureEngineeringProcessor:
+    def __init__(self, raw_data: pd.DataFrame, pipeline_name: str) -> None:
+        self.raw_data = raw_data
+        self.pipeline_name = pipeline_name
+        self.feature_table = None
+
+    def impute_scale(self) -> pd.DataFrame:
+        """Pipeline que imputa variables numérica y luego las escala, para
+        finalmente aplicar PCA y quedarse con N componentes principales"""
+        numeric_cols = [
+            "lead_time",
+            "adults",
+            "children",
+            "babies",
+            "adr"
+        ]
+        pipe = Pipeline(
+            steps = [
+                ("imputer_mean", SimpleImputer(strategy= "mean")),
+                ("std_scaling", StandardScaler()),
+                ("pca", PCA(n_components = 2))
+            ]
+        )
+        return pd.DataFrame(
+            pipe.fit_transform(self.raw_data[numeric_cols]),
+            columns = ["great_feature1", "great_feature2"]
+        )
+    
+    
+    def encode_categoricals(self) -> pd.DataFrame:
+
+        encoded_vars = []
+        for var in ["hotel", "market_segment", "reserved_room_type"]: 
+            encoder = OneHotEncoder()
+            logger.info(f"Codificando con OHE {var}")
+            encoded = encoder.fit_transform(self.raw_data[[var]]).toarray()
+            cols = [f"{var}_{col}" for col in encoder.categories_[0]]
+            _dataframe = pd.DataFrame(
+                encoded,
+                columns= cols
+            )
+            encoded_vars.append(_dataframe)
+        return pd.concat(encoded_vars, axis= 1)
+                                  
+        
+    def run(self) -> pd.DataFrame:
+        # acá podrenmos nuestro código
+        logger.info(f"Inicializando pipeline {self.pipeline_name}")
+
+        categorical = self.encode_categoricals()
+        numerics = self.impute_scale()
+
+        modeling_dataset = pd.concat([categorical, numerics], axis = 1)
+        
+        # Dataset Previo al pipeline
+        pipe = Pipeline(
+            steps = [
+                ("feature_selection", VarianceThreshold()),
+                ("scaling_robust", RobustScaler())
+            ]
+        )
+        self.feature_table = pd.DataFrame(
+            pipe.fit_transform(modeling_dataset),
+            columns = modeling_dataset.columns
+        )
+        self.feature_table["booking_id"] = [str(uuid.uuid4()) for _ in range(self.feature_table.shape[0])]
+        self.feature_table["event_timestamp"] = [datetime.now() for _ in range(self.feature_table.shape[0])]
+        time.sleep(1)
+        self.feature_table["created"] = [datetime.now() for _ in range(self.feature_table.shape[0])]
+        self.feature_table["event_timestamp"] = pd.to_datetime(self.feature_table["event_timestamp"], utc=True)
+        self.feature_table["created"] = pd.to_datetime(self.feature_table["created"], utc=True)
+        
+        return self.feature_table
+
+    def write_feature_table(self, filepath: str) -> None:
+        """Escribimos la feature table final para modelamiento"""
+        if self.feature_table is not None:
+            self.feature_table.to_parquet(filepath, index = False)
+        else:
+            raise Exception("La feature table no ha sido creada")
+
+
+    
+
 booking = Entity(name = "booking", join_keys = ["booking_id"])
 
 ## Recuerda el flujo lógico de feast:
